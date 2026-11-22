@@ -10,6 +10,7 @@
   },
   "dependencies": {
     "@babylonjs/core": "^9.37.1",
+    "@babylonjs/materials": "^9.37.1",
     "peerjs": "^1.5.5"
   },
   "devDependencies": {

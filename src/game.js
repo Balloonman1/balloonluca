@@ -1,72 +1,86 @@
 // One flight: builds the 3D scene for a map and runs the balloon.
 import * as B from './b.js';
 import { MAPS, L, W, YMAX, YMIN, LAYER_H, mulberry } from './maps.js';
+import { makeBalloon } from './balloon.js';
+
+const ASSET = import.meta.env.BASE_URL + 'assets/';
 
 const GEM_PTS = 10, RING_PTS = 50;
 const SPEED = 12;       // the balloon's own forward speed
-const BALLOON_R = 3.2;  // collision size of the envelope
+const BALLOON_R = 3.4;  // collision size of the envelope
 
 const clamp = (v, a, b) => Math.max(a, Math.min(b, v));
-
-function makeBalloon(scene, color, name) {
-  const root = new B.TransformNode('balloon', scene);
-  const tex = new B.DynamicTexture('stripes', { width: 256, height: 8 }, scene, false);
-  const ctx = tex.getContext();
-  for (let i = 0; i < 8; i++) { ctx.fillStyle = i % 2 ? '#ffffff' : color; ctx.fillRect(i * 32, 0, 32, 8); }
-  tex.update();
-  const em = new B.StandardMaterial('env', scene);
-  em.diffuseTexture = tex; em.specularColor = B.Color3.Black(); em.emissiveColor = new B.Color3(0.25, 0.25, 0.25);
-  const env = B.MeshBuilder.CreateSphere('env', { diameter: 6, segments: 16 }, scene);
-  env.scaling.y = 1.15; env.material = em; env.parent = root;
-  const sm = new B.StandardMaterial('skirt', scene);
-  sm.diffuseColor = B.Color3.FromHexString(color); sm.specularColor = B.Color3.Black(); sm.emissiveColor = sm.diffuseColor.scale(0.25);
-  const skirt = B.MeshBuilder.CreateCylinder('skirt', { height: 2.4, diameterTop: 4.0, diameterBottom: 1.6, tessellation: 16 }, scene);
-  skirt.position.y = -3.5; skirt.material = sm; skirt.parent = root;
-  const bm = new B.StandardMaterial('basket', scene);
-  bm.diffuseColor = new B.Color3(0.5, 0.33, 0.16); bm.specularColor = B.Color3.Black();
-  const basket = B.MeshBuilder.CreateBox('basket', { size: 1.3 }, scene);
-  basket.position.y = -5.7; basket.material = bm; basket.parent = root;
-  const fm = new B.StandardMaterial('flame', scene);
-  fm.emissiveColor = new B.Color3(1, 0.6, 0.1); fm.disableLighting = true;
-  const flame = B.MeshBuilder.CreateSphere('flame', { diameter: 1, segments: 6 }, scene);
-  flame.scaling.y = 1.8; flame.position.y = -4.6; flame.material = fm; flame.parent = root; flame.isVisible = false;
-
-  if (name) {
-    const lt = new B.DynamicTexture('label', { width: 256, height: 64 }, scene, false);
-    const c = lt.getContext();
-    c.clearRect(0, 0, 256, 64);
-    c.font = 'bold 40px sans-serif'; c.textAlign = 'center'; c.textBaseline = 'middle';
-    c.lineWidth = 8; c.strokeStyle = '#000'; c.strokeText(name, 128, 34);
-    c.fillStyle = '#fff'; c.fillText(name, 128, 34);
-    lt.update(); lt.hasAlpha = true;
-    const lm = new B.StandardMaterial('labelm', scene);
-    lm.diffuseTexture = lt; lm.emissiveColor = B.Color3.White(); lm.disableLighting = true; lm.useAlphaFromDiffuseTexture = true; lm.backFaceCulling = false;
-    const label = B.MeshBuilder.CreatePlane('label', { width: 10, height: 2.5 }, scene);
-    label.position.y = 5.6; label.material = lm; label.parent = root; label.billboardMode = B.Mesh.BILLBOARDMODE_ALL;
-  }
-  return { root, flame };
-}
 
 export class Flight {
   constructor(engine, mapIndex, players, myId, cb) {
     const map = (this.map = MAPS[mapIndex]);
     this.cb = cb;
     this.input = { left: false, right: false, up: false, down: false };
+    const low = (this.low = !!cb.low);
     const scene = (this.scene = new B.Scene(engine));
-    scene.clearColor = new B.Color4(map.sky[0], map.sky[1], map.sky[2], 1);
+    scene.clearColor = new B.Color4(map.fog[0], map.fog[1], map.fog[2], 1);
     scene.fogMode = B.Scene.FOGMODE_EXP2;
     scene.fogColor = new B.Color3(...map.fog);
     scene.fogDensity = map.fogDensity;
-    const hemi = new B.HemisphericLight('hemi', new B.Vector3(0.3, 1, -0.3), scene);
-    hemi.intensity = map.light;
-    hemi.groundColor = new B.Color3(...map.bounce);
+    scene.environmentTexture = B.CubeTexture.CreateFromPrefilteredData(ASSET + 'country.env', scene);
+    scene.environmentIntensity = 0.9;
+
+    // sun, sky light and shadows
+    const sunDir = (this.sunDir = new B.Vector3(...map.sun).normalize());
+    const hemi = new B.HemisphericLight('hemi', new B.Vector3(0, 1, 0), scene);
+    hemi.intensity = map.hemiI;
+    hemi.diffuse = new B.Color3(...map.hemiSky);
+    hemi.groundColor = new B.Color3(...map.hemiGround);
+    hemi.specular = B.Color3.Black();
+    const sun = (this.sun = new B.DirectionalLight('sun', sunDir.scale(-1), scene));
+    sun.intensity = map.sunI;
+    sun.diffuse = new B.Color3(1, 0.95, 0.86);
+    let shadows = null;
+    if (!low) {
+      shadows = new B.ShadowGenerator(2048, sun);
+      shadows.usePercentageCloserFiltering = true;
+      shadows.bias = 0.004; shadows.normalBias = 0.6;
+      shadows.darkness = 0.25;
+      sun.autoUpdateExtends = false;
+      sun.orthoLeft = -280; sun.orthoRight = 280; sun.orthoTop = 280; sun.orthoBottom = -280;
+      sun.shadowMinZ = 1; sun.shadowMaxZ = 1100;
+    }
+    const cast = (m) => { if (shadows) shadows.addShadowCaster(m, false); };
+
+    // physically based sky
+    const sky = new B.SkyMaterial('sky', scene);
+    sky.backFaceCulling = false;
+    sky.turbidity = map.turbidity; sky.rayleigh = map.rayleigh; sky.luminance = map.luminance;
+    sky.mieCoefficient = 0.005; sky.mieDirectionalG = 0.82;
+    sky.useSunPosition = true; sky.sunPosition = sunDir.scale(1000);
+    const skybox = B.MeshBuilder.CreateBox('skybox', { size: 9000 }, scene);
+    skybox.material = sky; skybox.infiniteDistance = true; skybox.applyFog = false;
+
     this.cam = new B.FreeCamera('cam', new B.Vector3(0, 55, -40), scene);
-    this.cam.maxZ = 1500; this.cam.fov = 0.95;
+    this.cam.minZ = 0.5; this.cam.maxZ = 9000; this.cam.fov = 0.9;
+
+    // film-style tone mapping, bloom and anti-aliasing
+    const pipe = new B.DefaultRenderingPipeline('pipe', true, scene, [this.cam]);
+    pipe.fxaaEnabled = true;
+    pipe.imageProcessingEnabled = true;
+    pipe.imageProcessing.toneMappingEnabled = true;
+    pipe.imageProcessing.toneMappingType = B.ImageProcessingConfiguration.TONEMAPPING_ACES;
+    pipe.imageProcessing.exposure = map.exposure;
+    pipe.imageProcessing.contrast = 1.12;
+    pipe.imageProcessing.vignetteEnabled = true;
+    pipe.imageProcessing.vignetteWeight = 0.7;
+    if (!low) {
+      pipe.bloomEnabled = true; pipe.bloomThreshold = 1.5; pipe.bloomWeight = 0.18; pipe.bloomScale = 0.5; pipe.bloomKernel = 48;
+      const glow = new B.GlowLayer('glow', scene, { blurKernelSize: 24 });
+      glow.intensity = 0.35;
+    }
+    this.onUpdate = [];
 
     // helpers handed to the map builder
     const mats = new Map();
     const h = {
-      scene, MB: B.MeshBuilder, rng: mulberry(map.seed),
+      scene, B, MB: B.MeshBuilder, rng: mulberry(map.seed), low, cast, onUpdate: this.onUpdate,
+      asset: (f) => ASSET + f,
       mat(c, o = {}) {
         const key = c.join() + (o.emis || 0) + (o.alpha || 1);
         if (mats.has(key)) return mats.get(key);
@@ -86,7 +100,7 @@ export class Flight {
       ground(c, y, emis = 0.15) {
         const g = B.MeshBuilder.CreateGround('ground', { width: 3000, height: L + 2400 }, scene);
         g.position.set(0, y, L / 2);
-        g.material = h.mat(c, { emis });
+        g.material = h.mat(c, { emis }); g.receiveShadows = true;
         return g;
       },
     };
@@ -153,16 +167,16 @@ export class Flight {
     players.forEach((p, i) => {
       const sx = (i - (n - 1) / 2) * 16;
       if (p.id === myId) {
-        this.me = makeBalloon(scene, p.color, '');
+        this.me = makeBalloon(scene, p.color, '', cast);
         this.pos = new B.Vector3(sx, 45, 0);
         this.me.root.position.copyFrom(this.pos);
       } else {
-        const b = makeBalloon(scene, p.color, p.name);
+        const b = makeBalloon(scene, p.color, p.name, cast);
         b.root.position.set(sx, 45, 0);
         this.remotes.set(p.id, { b, t: [sx, 45, 0, 0] });
       }
     });
-    if (!this.pos) { this.pos = new B.Vector3(0, 45, 0); this.me = makeBalloon(scene, '#e63946', ''); }
+    if (!this.pos) { this.pos = new B.Vector3(0, 45, 0); this.me = makeBalloon(scene, '#e63946', '', cast); }
 
     this.h = 0; this.vy = 0; this.wx = 0; this.wz = 0;
     this.pts = 0; this.layer = 1; this.running = false; this.finished = false; this.spin = 0;
@@ -188,9 +202,15 @@ export class Flight {
 
   placeCamera(k) {
     const p = this.pos, s = Math.sin(this.h), c = Math.cos(this.h);
-    const want = new B.Vector3(p.x - s * 30, p.y + 9, p.z - c * 30);
+    const want = new B.Vector3(p.x - s * 34, p.y + 5, p.z - c * 34);
+    // keep the camera out of the rock
+    for (const o of this.obstacles) {
+      if (o.t !== 's' || Math.abs(o.z - want.z) > o.r + 4) continue;
+      const dx = want.x - o.x, dy = want.y - o.y, dz = want.z - o.z, d = Math.hypot(dx, dy, dz) || 1, rr = o.r + 3;
+      if (d < rr) { want.x = o.x + (dx / d) * rr; want.y = o.y + (dy / d) * rr; want.z = o.z + (dz / d) * rr; }
+    }
     B.Vector3.LerpToRef(this.cam.position, want, k, this.cam.position);
-    this.cam.setTarget(new B.Vector3(p.x + s * 12, p.y + 1, p.z + c * 12));
+    this.cam.setTarget(new B.Vector3(p.x + s * 14, p.y - 1, p.z + c * 14));
   }
 
   update(dt) {
@@ -243,7 +263,13 @@ export class Flight {
 
     this.me.root.position.copyFrom(p);
     this.me.root.rotation.y = this.h;
-    this.me.flame.isVisible = this.running && !this.finished && inp.up;
+    const burning = this.running && !this.finished && inp.up;
+    this.me.flame.isVisible = burning;
+    if (burning) { const fl = 0.8 + Math.random() * 0.5; this.me.flame.scaling.set(fl, 0.8 + Math.random() * 0.6, fl); }
+    const glowT = burning ? 0.3 : 0.07, ec = this.me.envMat.emissiveColor;
+    ec.r += (glowT * 1.2 - ec.r) * Math.min(1, dt * 6); ec.g += (glowT - ec.g) * Math.min(1, dt * 6); ec.b += (glowT * 0.75 - ec.b) * Math.min(1, dt * 6);
+    this.sun.position.copyFrom(p).addInPlace(this.sunDir.scale(550));
+    for (const f of this.onUpdate) f(dt);
 
     this.spin += dt * 2;
     for (const q of this.pickups) if (q.on && Math.abs(q.z - p.z) < 400) { if (!q.ring) q.mesh.rotation.y = this.spin; }

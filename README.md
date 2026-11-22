@@ -19,3 +19,8 @@ Built with [Babylon.js](https://www.babylonjs.com/) and [PeerJS](https://peerjs.
 ## Deploy
 
 Netlify reads `netlify.toml`: build command `npm run build`, publish directory `dist`.
+
+## Credits
+
+Rock, grass and cloud textures and the sky lighting environment in `public/assets` come from the
+[Babylon.js asset library](https://github.com/BabylonJS/Assets), licensed CC BY 4.0. The rock texture was recolored.

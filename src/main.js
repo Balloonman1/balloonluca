@@ -10,8 +10,10 @@ const COLORS = ['#e63946', '#f77f00', '#ffd60a', '#2a9d8f', '#3a86ff', '#8338ec'
 const BONUS = [300, 200, 150, 100, 75, 50, 25, 10]; // extra points by finishing order
 const MAX_PLAYERS = 8;
 
+const LOW = matchMedia('(pointer: coarse)').matches || new URLSearchParams(location.search).has('low');
 const canvas = $('c');
 const engine = new B.Engine(canvas, true, { stencil: false });
+if (LOW) engine.setHardwareScalingLevel(Math.max(1, (window.devicePixelRatio || 1) / 1.5));
 window.addEventListener('resize', () => engine.resize());
 
 const S = { isHost: false, myId: null, color: COLORS[0], players: [], phase: 'menu', flightNo: 0, lastPos: {} };
@@ -220,6 +222,7 @@ function startFlight(m) {
   flight = new Flight(engine, m.flight, m.players, S.myId, {
     onPickup: (pts, ring) => beep(ring ? 1320 : 880, ring ? 0.2 : 0.08),
     onFinish: () => finish(true),
+    low: LOW,
   });
   flight.input = input;
   const map = MAPS[m.flight];
