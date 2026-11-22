@@ -1,0 +1,73 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
+<title>Balloon Race</title>
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🎈</text></svg>">
+</head>
+<body>
+<canvas id="c"></canvas>
+
+<div id="menu" class="screen">
+  <div class="card">
+    <h1>🎈 Balloon Race</h1>
+    <p class="sub">Three flights. Grab gems and rings. Reach the finish before time runs out.</p>
+    <label>Your name</label>
+    <input id="name" maxlength="12" placeholder="Pilot" autocomplete="off">
+    <label>Balloon color</label>
+    <div id="colors"></div>
+    <button id="create" class="big">Create a game</button>
+    <div class="joinrow">
+      <input id="code" maxlength="4" placeholder="CODE" autocomplete="off" autocapitalize="characters">
+      <button id="join">Join</button>
+    </div>
+    <button id="solo" class="ghost">Practice solo</button>
+    <div id="msg"></div>
+  </div>
+</div>
+
+<div id="lobby" class="screen hide">
+  <div class="card">
+    <h2>Room code</h2>
+    <div id="roomcode">----</div>
+    <p class="sub" id="lobbyhint">Tell the other pilots this code.</p>
+    <div id="plist"></div>
+    <button id="startbtn" class="big">Start game</button>
+    <p class="sub hide" id="waithost">Waiting for the host to start...</p>
+    <button id="leave1" class="ghost">Leave</button>
+  </div>
+</div>
+
+<div id="wait" class="screen hide">
+  <div class="card"><h2>Flight in progress</h2><p class="sub">You will join at the next flight.</p></div>
+</div>
+
+<div id="results" class="screen hide clear">
+  <div class="card wide">
+    <h2 id="rtitle"></h2>
+    <div id="winner"></div>
+    <table id="rtable"></table>
+    <button id="nextbtn" class="big"></button>
+    <p class="sub hide" id="waitnext">Waiting for the host...</p>
+    <button id="leave2" class="ghost">Leave game</button>
+  </div>
+</div>
+
+<div id="hud" class="hide">
+  <div id="top">
+    <div class="pill" id="timer">3:00</div>
+    <div class="pill" id="mapname"></div>
+    <div class="pill" id="score">0</div>
+  </div>
+  <div id="progress"><div id="track"></div><div id="flag">🏁</div></div>
+  <div id="wind"></div>
+  <div id="bigtext"></div>
+  <div id="touch">
+    <div class="pad left"><button data-k="left">◀</button><button data-k="right">▶</button></div>
+    <div class="pad right"><button data-k="up">▲</button><button data-k="down">▼</button></div>
+  </div>
+</div>
+<script type="module" src="/src/main.js"></script>
+</body>
+</html>
