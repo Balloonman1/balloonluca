@@ -56,3 +56,8 @@ body.touch #touch { display: block; }
 .pad button { width: 78px; height: 78px; border-radius: 50%; font-size: 30px; background: rgba(255,255,255,.35); border: 3px solid rgba(255,255,255,.8); color: #fff; padding: 0; touch-action: none; }
 .pad button.down { background: rgba(255,255,255,.75); color: #1b2430; }
 @media (max-height: 480px) { .pad button { width: 62px; height: 62px; } #wind { top: 45%; } .wrow { padding: 3px 10px 3px 6px; font-size: 12px; } }
+
+.botrow { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin-top: 12px; padding: 8px 8px 8px 14px; background: #eef2f7; border-radius: 14px; font-weight: 700; }
+.botrow button { width: 42px; height: 42px; padding: 0; margin-left: 4px; background: #3a86ff; }
+#lobbybotpick button { background: #c9d3df; color: #33404f; }
+#lobbybotpick button.sel { background: #3a86ff; color: #fff; }

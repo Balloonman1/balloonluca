@@ -15,6 +15,7 @@ export class Flight {
   constructor(engine, mapIndex, players, myId, cb) {
     const map = (this.map = MAPS[mapIndex]);
     this.cb = cb;
+    this.timeLimit = cb.timeLimit || 180;
     this.input = { left: false, right: false, up: false, down: false };
     const low = (this.low = !!cb.low);
     const scene = (this.scene = new B.Scene(engine));
@@ -163,6 +164,7 @@ export class Flight {
 
     // balloons
     this.remotes = new Map();
+    this.bots = []; this.botSkill = new Map(); this.botsOn = false; this.clock = 0;
     const n = players.length;
     players.forEach((p, i) => {
       const sx = (i - (n - 1) / 2) * 16;
@@ -174,6 +176,11 @@ export class Flight {
         const b = makeBalloon(scene, p.color, p.name, cast);
         b.root.position.set(sx, 45, 0);
         this.remotes.set(p.id, { b, t: [sx, 45, 0, 0] });
+        if (p.bot && cb.isHost) {
+          const bot = { id: p.id, pos: new B.Vector3(sx, 45, 0), h: 0, vy: 0, wx: 0, wz: 0, layer: 1, pts: 0, done: false,
+            taken: new Set(), skip: new Set(), inp: { left: false, right: false, up: false, down: false }, target: null, rethink: 0 };
+          this.bots.push(bot); this.botSkill.set(p.id, p.skill ?? 0.6);
+        }
       }
     });
     if (!this.pos) { this.pos = new B.Vector3(0, 45, 0); this.me = makeBalloon(scene, '#e63946', '', cast); }
@@ -194,7 +201,14 @@ export class Flight {
     return dx * dx + dz * dz < rad * rad;
   }
 
-  start() { this.running = true; }
+  start() {
+    this.running = true; this.botsOn = true;
+    // each bot overlooks some pickups, depending on its skill
+    for (const b of this.bots) {
+      const sk = this.botSkill.get(b.id);
+      for (let i = 0; i < this.pickups.length; i++) if (Math.random() > sk) b.skip.add(i);
+    }
+  }
   stop() { this.running = false; }
 
   setRemote(id, d) { const r = this.remotes.get(id); if (r) r.t = d; }
@@ -213,40 +227,122 @@ export class Flight {
     this.cam.setTarget(new B.Vector3(p.x + s * 14, p.y - 1, p.z + c * 14));
   }
 
+  // Flight physics shared by the player and the bots.
+  stepBody(b, inp, dt) {
+    const p = b.pos;
+    const turn = (inp.right ? 1 : 0) - (inp.left ? 1 : 0);
+    b.h = clamp(b.h + turn * 1.1 * dt, -1.25, 1.25);
+    const vt = ((inp.up ? 1 : 0) - (inp.down ? 1 : 0)) * 11;
+    b.vy += (vt - b.vy) * Math.min(1, dt * 2.4);
+    b.layer = clamp(Math.floor(p.y / LAYER_H), 0, 3);
+    const w = this.map.winds[b.layer];
+    const k = Math.min(1, dt * 1.6);
+    b.wx += (w.wx - b.wx) * k; b.wz += (w.wz - b.wz) * k;
+    const sp = p.y <= YMIN + 0.3 ? SPEED * 0.5 : SPEED; // dragging along the ground is slow
+    p.x += (Math.sin(b.h) * sp + b.wx) * dt;
+    p.z += (Math.cos(b.h) * sp + b.wz) * dt;
+    p.y += b.vy * dt;
+    if (p.y < YMIN) { p.y = YMIN; if (b.vy < 0) b.vy = 0; }
+    if (p.y > YMAX) { p.y = YMAX; if (b.vy > 0) b.vy = 0; }
+    p.x = clamp(p.x, -W, W);
+    if (p.z < -20) p.z = -20;
+
+    // bump off scenery
+    for (const o of this.obstacles) {
+      if (Math.abs(o.z - p.z) > 60) continue;
+      if (!this.hits(o, p.x, p.y, p.z, BALLOON_R)) continue;
+      if (o.t === 's') {
+        let dx = p.x - o.x, dy = p.y - o.y, dz = p.z - o.z;
+        const d = Math.hypot(dx, dy, dz) || 1, rr = o.r + BALLOON_R;
+        p.x = o.x + (dx / d) * rr; p.y = Math.max(YMIN, o.y + (dy / d) * rr); p.z = o.z + (dz / d) * rr;
+      } else {
+        let dx = p.x - o.x, dz = p.z - o.z;
+        const d = Math.hypot(dx, dz) || 1, rr = o.r * clamp(1 - p.y / o.h, 0, 1) + BALLOON_R;
+        p.x = o.x + (dx / d) * rr; p.z = o.z + (dz / d) * rr;
+      }
+    }
+  }
+
+  // ---------- computer pilots (run on the host only) ----------
+  botThink(b, dt, timeLeft) {
+    const p = b.pos, winds = this.map.winds, inp = b.inp;
+    const need = (L - p.z) / Math.max(1, timeLeft);
+    const hurry = need > SPEED + 2.5; // behind schedule: ride the good wind and stop wandering
+    b.rethink -= dt;
+    const t = b.target;
+    if (b.rethink <= 0 || !t || b.taken.has(t.i) || t.q.z < p.z + 4) {
+      b.rethink = 0.5 + Math.random() * 0.5;
+      b.target = null;
+      let best = 0;
+      for (let i = 0; i < this.pickups.length; i++) {
+        const q = this.pickups[i], dz = q.z - p.z;
+        if (dz < 10 || dz > 170 || b.taken.has(i) || b.skip.has(i)) continue;
+        const dx = Math.abs(q.x - p.x), dy = Math.abs(q.y - p.y);
+        if (dx > dz * 0.8 + 4 || dy > dz * 0.55 + 3) continue;
+        if (hurry && winds[clamp(Math.floor(q.y / LAYER_H), 0, 3)].wz < 3) continue;
+        const sc = q.pts / (dz + 2 * dx + 2 * dy + 25);
+        if (sc > best) { best = sc; b.target = { i, q }; }
+      }
+    }
+    let ax, ay, az;
+    if (b.target) { ax = b.target.q.x; ay = b.target.q.y; az = b.target.q.z; }
+    else {
+      // no target: cruise in the best wind layer that is close by
+      let bl = b.layer, bs = -99;
+      for (let i = 0; i < 4; i++) { const sc = winds[i].wz - Math.abs(i - b.layer) * (hurry ? 0.5 : 2); if (sc > bs) { bs = sc; bl = i; } }
+      ax = p.x * 0.9; ay = clamp(bl * LAYER_H + LAYER_H / 2, YMIN + 4, YMAX - 4); az = p.z + 80;
+    }
+    // steer around scenery
+    let near = 1e9;
+    for (const o of this.obstacles) {
+      const dz = o.z - p.z;
+      if (dz < -6 || dz > 60 || dz > near) continue;
+      const pad = BALLOON_R + 5;
+      if (o.t === 's') {
+        if (Math.abs(o.x - p.x) > o.r + pad || Math.abs(o.y - p.y) > o.r + pad) continue;
+        const opts = [[o.x - o.r - pad - 3, p.y], [o.x + o.r + pad + 3, p.y], [p.x, o.y + o.r + pad + 3], [p.x, o.y - o.r - pad - 3]]
+          .filter((c) => Math.abs(c[0]) < W - 4 && c[1] > YMIN + 2 && c[1] < YMAX - 2);
+        if (!opts.length) continue;
+        opts.sort((c, d) => Math.hypot(c[0] - p.x, c[1] - p.y) - Math.hypot(d[0] - p.x, d[1] - p.y));
+        near = dz; ax = opts[0][0]; ay = opts[0][1]; az = o.z;
+      } else {
+        const rad = o.r * clamp(1 - p.y / o.h, 0, 1) + pad;
+        if (p.y > o.h + pad || Math.abs(o.x - p.x) > rad) continue;
+        near = dz; ax = o.x + (p.x >= o.x ? 1 : -1) * (rad + 4); ay = p.y; az = o.z;
+        if (Math.abs(ax) > W - 4) ax = o.x - (p.x >= o.x ? 1 : -1) * (rad + 4);
+      }
+    }
+    const dz = Math.max(8, az - p.z), tt = dz / (SPEED + Math.max(-4, b.wz));
+    const wantH = clamp(Math.atan2(ax - p.x - b.wx * tt, dz), -1.1, 1.1);
+    inp.left = wantH < b.h - 0.04; inp.right = wantH > b.h + 0.04;
+    const pred = p.y + b.vy * 0.45;
+    inp.up = ay - pred > 1.5; inp.down = ay - pred < -1.5;
+  }
+
+  updateBots(dt, timeLeft) {
+    for (const b of this.bots) {
+      if (b.done) continue;
+      this.botThink(b, dt, timeLeft);
+      this.stepBody(b, b.inp, dt);
+      const p = b.pos;
+      for (let i = 0; i < this.pickups.length; i++) {
+        const q = this.pickups[i];
+        if (Math.abs(q.z - p.z) > 10 || b.taken.has(i)) continue;
+        const dx = q.x - p.x, dy = q.y - p.y, dz = q.z - p.z;
+        if (dx * dx + dy * dy + dz * dz < q.rad * q.rad) { b.taken.add(i); b.pts += q.pts; }
+      }
+      const r = this.remotes.get(b.id);
+      if (r) r.t = [p.x, p.y, p.z, b.h];
+      if (p.z >= L) { b.done = true; this.cb.onBotDone(b.id, true, b.pts); }
+    }
+  }
+  botsTimeUp() { for (const b of this.bots) if (!b.done) { b.done = true; this.cb.onBotDone(b.id, false, b.pts); } }
+  botState(id) { const b = this.bots.find((x) => x.id === id); return b ? [+b.pos.x.toFixed(1), +b.pos.y.toFixed(1), +b.pos.z.toFixed(1), +b.h.toFixed(2), b.pts] : null; }
+
   update(dt) {
     const p = this.pos, inp = this.input;
     if (this.running && !this.finished) {
-      const turn = (inp.right ? 1 : 0) - (inp.left ? 1 : 0);
-      this.h = clamp(this.h + turn * 1.1 * dt, -1.25, 1.25);
-      const vt = ((inp.up ? 1 : 0) - (inp.down ? 1 : 0)) * 11;
-      this.vy += (vt - this.vy) * Math.min(1, dt * 2.4);
-      this.layer = clamp(Math.floor(p.y / LAYER_H), 0, 3);
-      const w = this.map.winds[this.layer];
-      const k = Math.min(1, dt * 1.6);
-      this.wx += (w.wx - this.wx) * k; this.wz += (w.wz - this.wz) * k;
-      const sp = p.y <= YMIN + 0.3 ? SPEED * 0.5 : SPEED; // dragging along the ground is slow
-      p.x += (Math.sin(this.h) * sp + this.wx) * dt;
-      p.z += (Math.cos(this.h) * sp + this.wz) * dt;
-      p.y += this.vy * dt;
-      if (p.y < YMIN) { p.y = YMIN; if (this.vy < 0) this.vy = 0; }
-      if (p.y > YMAX) { p.y = YMAX; if (this.vy > 0) this.vy = 0; }
-      p.x = clamp(p.x, -W, W);
-      if (p.z < -20) p.z = -20;
-
-      // bump off scenery
-      for (const o of this.obstacles) {
-        if (Math.abs(o.z - p.z) > 60) continue;
-        if (!this.hits(o, p.x, p.y, p.z, BALLOON_R)) continue;
-        if (o.t === 's') {
-          let dx = p.x - o.x, dy = p.y - o.y, dz = p.z - o.z;
-          const d = Math.hypot(dx, dy, dz) || 1, rr = o.r + BALLOON_R;
-          p.x = o.x + (dx / d) * rr; p.y = Math.max(YMIN, o.y + (dy / d) * rr); p.z = o.z + (dz / d) * rr;
-        } else {
-          let dx = p.x - o.x, dz = p.z - o.z;
-          const d = Math.hypot(dx, dz) || 1, rr = o.r * clamp(1 - p.y / o.h, 0, 1) + BALLOON_R;
-          p.x = o.x + (dx / d) * rr; p.z = o.z + (dz / d) * rr;
-        }
-      }
+      this.stepBody(this, inp, dt);
 
       for (const q of this.pickups) {
         if (!q.on || Math.abs(q.z - p.z) > 10) continue;
@@ -260,6 +356,8 @@ export class Flight {
 
       if (p.z >= L) { this.finished = true; this.cb.onFinish(); }
     }
+
+    if (this.botsOn) { this.clock += dt; this.updateBots(dt, this.timeLimit - this.clock); }
 
     this.me.root.position.copyFrom(p);
     this.me.root.rotation.y = this.h;

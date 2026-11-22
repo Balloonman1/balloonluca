@@ -9,6 +9,7 @@ const $ = (id) => document.getElementById(id);
 const COLORS = ['#e63946', '#f77f00', '#ffd60a', '#2a9d8f', '#3a86ff', '#8338ec', '#ff5db1', '#222831'];
 const BONUS = [300, 200, 150, 100, 75, 50, 25, 10]; // extra points by finishing order
 const MAX_PLAYERS = 8;
+const BOTS = [['Sky Fox', 0.85], ['Breezy', 0.68], ['Captain Cloud', 0.52], ['Gusty', 0.38]]; // name, skill
 
 const LOW = matchMedia('(pointer: coarse)').matches || new URLSearchParams(location.search).has('low');
 const canvas = $('c');
@@ -74,7 +75,8 @@ function myName() {
   try { localStorage.setItem('br_name', n); } catch (e) { /* storage off */ }
   return n;
 }
-function busy(on) { for (const id of ['create', 'join', 'solo']) $(id).disabled = on; }
+function busy(on) { for (const id of ['create', 'join', 'solo']) $(id).disabled = on;
+  document.querySelectorAll('#botpick button').forEach((b) => { b.disabled = on; }); }
 
 $('create').onclick = async () => {
   $('msg').textContent = 'Creating game...'; busy(true);
@@ -88,6 +90,17 @@ $('create').onclick = async () => {
   busy(false);
 };
 $('solo').onclick = () => { net = null; beginHost(null); hostStart(0); };
+// "Play against bots" on the menu, and the bot picker in the lobby
+[1, 2, 3, 4].forEach((n) => {
+  const b = document.createElement('button'); b.textContent = n;
+  b.onclick = () => { net = null; beginHost(null); hostSetBots(n); hostStart(0); };
+  $('botpick').appendChild(b);
+});
+[0, 1, 2, 3, 4].forEach((n) => {
+  const b = document.createElement('button'); b.textContent = n; b.dataset.n = n;
+  b.onclick = () => { if (S.isHost && S.phase === 'lobby') hostSetBots(n); };
+  $('lobbybotpick').appendChild(b);
+});
 $('join').onclick = async () => {
   const code = $('code').value.trim().toUpperCase();
   if (code.length !== 4) { $('msg').textContent = 'Type the 4-letter code.'; return; }
@@ -125,7 +138,10 @@ function leave(msg) {
 }
 
 function renderLobby() {
-  $('plist').innerHTML = S.players.map((p) => `<div class="prow"><span class="dot" style="background:${p.color}"></span>${esc(p.name)}${p.id === S.myId ? ' (you)' : ''}</div>`).join('');
+  $('plist').innerHTML = S.players.map((p) => `<div class="prow"><span class="dot" style="background:${p.color}"></span>${p.bot ? '🤖 ' : ''}${esc(p.name)}${p.id === S.myId ? ' (you)' : ''}</div>`).join('');
+  const nb = S.players.filter((p) => p.bot).length;
+  $('lobbybots').classList.toggle('hide', !S.isHost);
+  document.querySelectorAll('#lobbybotpick button').forEach((b) => b.classList.toggle('sel', +b.dataset.n === nb));
   $('startbtn').classList.toggle('hide', !S.isHost);
   $('waithost').classList.toggle('hide', S.isHost);
   $('lobbyhint').textContent = S.isHost ? 'Tell the other pilots this code.' : 'You are in!';
@@ -141,13 +157,29 @@ function beginHost(code) {
 }
 function broadcast(m) { if (net) net.broadcast(m); clientHandle(m); }
 function sendHost(m) { if (S.isHost) hostHandle('host', m); else if (net) net.toHost(m); }
-function hostRoster() { return [...hostP.values()].map((p) => ({ id: p.id, name: p.name, color: p.color, total: p.total })); }
+function hostRoster() { return [...hostP.values()].map((p) => ({ id: p.id, name: p.name, color: p.color, total: p.total, bot: !!p.bot, skill: p.skill })); }
+function hostSetBots(n) {
+  for (const p of [...hostP.values()]) if (p.bot) hostP.delete(p.id);
+  const humans = hostP.size;
+  n = Math.max(0, Math.min(n, BOTS.length, MAX_PLAYERS - humans));
+  const used = new Set([...hostP.values()].map((p) => p.color));
+  const free = COLORS.filter((c) => !used.has(c));
+  for (let i = 0; i < n; i++) {
+    hostP.set('bot' + i, { id: 'bot' + i, bot: true, name: BOTS[i][0], skill: BOTS[i][1], color: free[i % free.length] || COLORS[i],
+      total: 0, cur: { pts: 0, done: false, fin: false, time: 0 }, d: null, seen: 0 });
+  }
+  broadcast({ t: 'roster', players: hostRoster() });
+}
 
 function hostHandle(id, m) {
   if (!m || typeof m !== 'object') return;
   if (m.t === 'hello') {
     if (hostP.has(id)) return;
-    if (hostP.size >= MAX_PLAYERS) { net.toGuest(id, { t: 'full' }); return; }
+    if (hostP.size >= MAX_PLAYERS) {
+      // make room by dropping a bot, if we are still in the lobby
+      const bot = S.phase === 'lobby' && [...hostP.values()].reverse().find((p) => p.bot);
+      if (bot) hostP.delete(bot.id); else { net.toGuest(id, { t: 'full' }); return; }
+    }
     const inFlight = S.phase === 'flight';
     hostP.set(id, {
       id, name: String(m.name || 'Pilot').slice(0, 12), color: COLORS.includes(m.color) ? m.color : COLORS[0],
@@ -222,6 +254,8 @@ function startFlight(m) {
   flight = new Flight(engine, m.flight, m.players, S.myId, {
     onPickup: (pts, ring) => beep(ring ? 1320 : 880, ring ? 0.2 : 0.08),
     onFinish: () => finish(true),
+    onBotDone: (id, fin, pts) => hostHandle(id, { t: 'done', fin, time: (performance.now() - tStart) / 1000, pts }),
+    isHost: S.isHost, timeLimit: FLIGHT_TIME,
     low: LOW,
   });
   flight.input = input;
@@ -273,6 +307,7 @@ function hud() {
       $('timer').classList.toggle('low', left <= 20);
       if (left <= 0) finish(false);
     }
+    if (left <= 0 && S.isHost) flight.botsTimeUp();
   }
   $('score').textContent = flight.pts;
   document.querySelectorAll('.wrow').forEach((r) => r.classList.toggle('on', +r.dataset.l === flight.layer));
@@ -316,7 +351,7 @@ setInterval(() => {
   sendHost({ t: 'pos', d: [+p.x.toFixed(1), +p.y.toFixed(1), +p.z.toFixed(1), +flight.h.toFixed(2), flight.pts] });
   if (!S.isHost) return;
   const all = {};
-  for (const q of hostP.values()) if (q.d) all[q.id] = q.d;
+  for (const q of hostP.values()) { if (q.bot) q.d = flight.botState(q.id); if (q.d) all[q.id] = q.d; }
   broadcast({ t: 'pos', p: all });
   if (performance.now() > hostDeadline) {
     for (const q of hostP.values()) q.cur.done = true;
@@ -330,7 +365,7 @@ setInterval(() => {
   const now = performance.now();
   if (S.isHost) {
     net.broadcast({ t: 'ping' });
-    for (const q of [...hostP.values()]) if (q.id !== 'host' && now - q.seen > 10000) hostLeave(q.id);
+    for (const q of [...hostP.values()]) if (q.id !== 'host' && !q.bot && now - q.seen > 10000) hostLeave(q.id);
   } else {
     net.toHost({ t: 'ping' });
     if (now - hostSeen > 20000) leave('Lost connection to the host.');
